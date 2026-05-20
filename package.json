@@ -35,10 +35,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/promonteiro89/localized-app-name.git"
+    "url": "git+https://github.com/promonteiro89/cordova-plugin-localized-app-name.git"
   },
   "bugs": {
-    "url": "https://github.com/promonteiro89/localized-app-name/issues"
+    "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name/issues"
   },
-  "homepage": "https://github.com/promonteiro89/localized-app-name#readme"
+  "homepage": "https://github.com/promonteiro89/cordova-plugin-localized-app-name#readme"
 }
