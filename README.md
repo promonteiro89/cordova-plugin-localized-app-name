@@ -13,12 +13,22 @@ Built for OutSystems 11 Cordova apps (works in any Cordova project).
 
 ## How it works
 
-At build time, the plugin reads one small JSON file per language from `translations/app/` and generates the native localization files:
+At build time, the plugin reads one small JSON file per language and generates the native localization files:
 
-- **iOS** → `<locale>.lproj/InfoPlist.strings` with `CFBundleDisplayName`
-- **Android** → `values-<locale>/strings.xml` with `app_name`
+- **iOS** → `<locale>.lproj/InfoPlist.strings` with `CFBundleDisplayName` and `CFBundleName`
+- **Android** → `values-<locale>/strings.xml` with `app_name`, `launcher_name`, and `activity_name` (writes all three so the localized label applies regardless of which key Cordova's manifest references)
 
 The OS picks the right one based on the device language. Locales you don't define fall back to your default app name automatically — you only need to ship the languages you actually want to support.
+
+### Where the plugin looks for JSON files
+
+It tries these locations in order and uses the first one that contains valid locale files:
+
+1. `<projectRoot>/translations/app/` — standard Cordova location
+2. `<projectRoot>/www/translations/app/` — if you keep them under the web root
+3. `<projectRoot>/www/` — OutSystems MABS (resource targets are flattened to `www/`)
+
+A "valid locale file" is a `.json` whose filename looks like a locale code (`en.json`, `pt-PT.json`, `zh-Hans.json`) and whose contents have a `config_ios` or `config_android` key. Other JSONs in `www/` are ignored.
 
 ## Install
 
@@ -40,18 +50,18 @@ In your mobile app's **Extensibility Configurations**:
     ]
   },
   "plugin": [
-    { "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name" }
+    { "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name#v1.1.0" }
   ],
   "resource": [
-    { "file": "en.json", "target": "translations/app/en.json" },
-    { "file": "pt.json", "target": "translations/app/pt.json" }
+    { "file": "en.json", "target": "en.json" },
+    { "file": "pt.json", "target": "pt.json" }
   ]
 }
 ```
 
 The `CFBundleAllowMixedLocalizations` preference is **required** on iOS — without it, iOS silently ignores the localized display name.
 
-Upload your `en.json`, `pt.json`, etc. as Module Resources in Service Studio (Deploy Action = *Deploy to Target Directory*).
+Upload your `en.json`, `pt.json`, etc. as Module Resources in Service Studio (Deploy Action = *Deploy to Target Directory*). MABS flattens resource targets to the `www/` root, which the plugin auto-detects.
 
 ## JSON format
 

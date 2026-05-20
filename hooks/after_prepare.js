@@ -5,40 +5,64 @@ const path = require('path');
 
 const LOG_PREFIX = '[localized-app-name]';
 
+const ANDROID_STRING_KEYS = ['app_name', 'launcher_name', 'activity_name'];
+
+const LOCALE_FILENAME_PATTERN = /^[a-zA-Z]{2,3}([-_][a-zA-Z0-9]+)*\.json$/;
+
 module.exports = function (context) {
     const projectRoot = context.opts.projectRoot;
-    const translationsDir = path.join(projectRoot, 'translations', 'app');
+    const discovery = findTranslationsDir(projectRoot);
 
-    if (!fs.existsSync(translationsDir)) {
-        console.log(`${LOG_PREFIX} No translations/app/ directory found, skipping.`);
+    if (!discovery) {
+        console.log(`${LOG_PREFIX} No locale JSON files found in any known location, skipping.`);
+        console.log(`${LOG_PREFIX} Searched: translations/app/, www/translations/app/, www/`);
         return;
     }
 
-    const files = fs.readdirSync(translationsDir).filter(f => f.toLowerCase().endsWith('.json'));
-    if (files.length === 0) {
-        console.log(`${LOG_PREFIX} No .json files in translations/app/, skipping.`);
-        return;
-    }
+    console.log(`${LOG_PREFIX} Reading locale files from ${path.relative(projectRoot, discovery.dir) || '.'}`);
 
     const platforms = context.opts.platforms || [];
-    const entries = files.map(file => {
-        const locale = path.basename(file, path.extname(file));
-        try {
-            const data = JSON.parse(fs.readFileSync(path.join(translationsDir, file), 'utf8'));
-            return { locale, data };
-        } catch (e) {
-            console.error(`${LOG_PREFIX} Failed to parse ${file}: ${e.message}`);
-            return null;
-        }
-    }).filter(Boolean);
+    const entries = discovery.files
+        .map(file => {
+            const locale = path.basename(file, path.extname(file));
+            try {
+                const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
+                return { locale, data };
+            } catch (e) {
+                console.error(`${LOG_PREFIX} Failed to parse ${file}: ${e.message}`);
+                return null;
+            }
+        })
+        .filter(Boolean);
 
-    if (platforms.includes('ios')) {
-        writeIos(projectRoot, entries);
-    }
-    if (platforms.includes('android')) {
-        writeAndroid(projectRoot, entries);
-    }
+    if (platforms.includes('ios')) writeIos(projectRoot, entries);
+    if (platforms.includes('android')) writeAndroid(projectRoot, entries);
 };
+
+function findTranslationsDir(projectRoot) {
+    const candidates = [
+        path.join(projectRoot, 'translations', 'app'),
+        path.join(projectRoot, 'www', 'translations', 'app'),
+        path.join(projectRoot, 'www'),
+    ];
+
+    for (const dir of candidates) {
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir).filter(f => isLocaleFile(dir, f));
+        if (files.length > 0) return { dir, files };
+    }
+    return null;
+}
+
+function isLocaleFile(dir, filename) {
+    if (!LOCALE_FILENAME_PATTERN.test(filename)) return false;
+    try {
+        const data = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'));
+        return Boolean(data && (data.config_ios || data.config_android));
+    } catch {
+        return false;
+    }
+}
 
 function writeIos(projectRoot, entries) {
     const iosDir = path.join(projectRoot, 'platforms', 'ios');
@@ -80,33 +104,26 @@ function writeAndroid(projectRoot, entries) {
         fs.mkdirSync(valuesDir, { recursive: true });
 
         const stringsPath = path.join(valuesDir, 'strings.xml');
-        const xmlValue = escapeXmlValue(appName);
-        let output;
+        let xml = fs.existsSync(stringsPath)
+            ? fs.readFileSync(stringsPath, 'utf8')
+            : `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n`;
 
-        if (fs.existsSync(stringsPath)) {
-            const existing = fs.readFileSync(stringsPath, 'utf8');
-            if (/<string\s+name="app_name"\s*>[\s\S]*?<\/string>/.test(existing)) {
-                output = existing.replace(
-                    /<string\s+name="app_name"\s*>[\s\S]*?<\/string>/,
-                    `<string name="app_name">${xmlValue}</string>`
-                );
-            } else {
-                output = existing.replace(
-                    /<\/resources>/,
-                    `    <string name="app_name">${xmlValue}</string>\n</resources>`
-                );
-            }
-        } else {
-            output =
-                `<?xml version="1.0" encoding="utf-8"?>\n` +
-                `<resources>\n` +
-                `    <string name="app_name">${xmlValue}</string>\n` +
-                `</resources>\n`;
+        for (const key of ANDROID_STRING_KEYS) {
+            xml = upsertAndroidString(xml, key, appName);
         }
 
-        fs.writeFileSync(stringsPath, output, 'utf8');
+        fs.writeFileSync(stringsPath, xml, 'utf8');
         console.log(`${LOG_PREFIX} Android -> values-${androidLocale}/strings.xml`);
     }
+}
+
+function upsertAndroidString(xml, key, value) {
+    const escaped = escapeXmlValue(value);
+    const keyPattern = new RegExp(`<string\\s+name="${key}"\\s*>[\\s\\S]*?</string>`);
+    if (keyPattern.test(xml)) {
+        return xml.replace(keyPattern, `<string name="${key}">${escaped}</string>`);
+    }
+    return xml.replace(/<\/resources>/, `    <string name="${key}">${escaped}</string>\n</resources>`);
 }
 
 function findIosAppFolder(iosDir) {
