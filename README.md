@@ -50,7 +50,7 @@ In your mobile app's **Extensibility Configurations**:
     ]
   },
   "plugin": [
-    { "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name#v1.1.0" }
+    { "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name#v1.0.0" }
   ],
   "resource": [
     { "file": "en.json", "target": "en.json" },
