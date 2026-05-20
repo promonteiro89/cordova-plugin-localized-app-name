@@ -48,14 +48,7 @@ In your mobile app's **Extensibility Configurations**:
     "ios": [
       { "name": "CFBundleAllowMixedLocalizations", "value": "true" }
     ]
-  },
-  "plugin": [
-    { "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name#v1.0.0" }
-  ],
-  "resource": [
-    { "file": "en.json", "target": "en.json" },
-    { "file": "pt.json", "target": "pt.json" }
-  ]
+  }
 }
 ```
 
