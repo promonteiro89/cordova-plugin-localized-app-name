@@ -2,9 +2,11 @@
 
 A focused Cordova plugin that localizes your app's **home-screen display name** on iOS and Android based on the device language.
 
-- English device → "Continente Card"
-- Portuguese device → "Cartão Continente"
-- Spanish device → "Tarjeta Continente"
+- English device → "Weather"
+- Portuguese device → "Tempo"
+- Spanish device → "Clima"
+- French device → "Météo"
+- German device → "Wetter"
 - ...and any other language you define
 
 Built for OutSystems 11 Cordova apps (works in any Cordova project).
@@ -58,10 +60,10 @@ One file per language, named `<locale>.json`:
 ```json
 {
   "config_ios": {
-    "CFBundleDisplayName": "Cartão Continente"
+    "CFBundleDisplayName": "Tempo"
   },
   "config_android": {
-    "app_name": "Cartão Continente"
+    "app_name": "Tempo"
   }
 }
 ```

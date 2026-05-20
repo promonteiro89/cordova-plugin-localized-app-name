@@ -1,8 +1,8 @@
 {
   "config_ios": {
-    "CFBundleDisplayName": "Cartão Continente"
+    "CFBundleDisplayName": "Tempo"
   },
   "config_android": {
-    "app_name": "Cartão Continente"
+    "app_name": "Tempo"
   }
 }
