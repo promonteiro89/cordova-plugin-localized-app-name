@@ -1,0 +1,8 @@
+{
+  "config_ios": {
+    "CFBundleDisplayName": "Cartão Continente"
+  },
+  "config_android": {
+    "app_name": "Cartão Continente"
+  }
+}

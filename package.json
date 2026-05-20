@@ -1,0 +1,44 @@
+{
+  "name": "cordova-plugin-localized-app-name",
+  "version": "1.0.0",
+  "description": "Localizes the Cordova app's home-screen display name on iOS and Android based on the device language.",
+  "main": "hooks/after_prepare.js",
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "ecosystem:cordova",
+    "cordova",
+    "cordova-ios",
+    "cordova-android",
+    "localization",
+    "i18n",
+    "app-name",
+    "display-name",
+    "outsystems"
+  ],
+  "cordova": {
+    "id": "cordova-plugin-localized-app-name",
+    "platforms": [
+      "ios",
+      "android"
+    ]
+  },
+  "engines": {
+    "cordovaDependencies": {
+      "1.0.0": {
+        "cordova": ">=9.0.0"
+      }
+    }
+  },
+  "author": "promonteiro89",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/promonteiro89/localized-app-name.git"
+  },
+  "bugs": {
+    "url": "https://github.com/promonteiro89/localized-app-name/issues"
+  },
+  "homepage": "https://github.com/promonteiro89/localized-app-name#readme"
+}

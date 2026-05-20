@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        id="cordova-plugin-localized-app-name"
+        version="1.0.0">
+
+    <name>Localized App Name</name>
+    <description>Localizes the Cordova app's home-screen display name on iOS and Android based on the device language. Reads one small JSON file per locale and generates the native localization resources at build time.</description>
+    <license>MIT</license>
+    <keywords>cordova, ecosystem:cordova, ios, android, localization, i18n, app-name, display-name, outsystems</keywords>
+
+    <engines>
+        <engine name="cordova" version=">=9.0.0" />
+    </engines>
+
+    <hook type="after_prepare" src="hooks/after_prepare.js" />
+
+    <platform name="ios" />
+    <platform name="android" />
+
+</plugin>
