@@ -145,7 +145,7 @@ function registerIosLocalizations(iosDir, appFolderName, locales) {
     let added = 0;
     for (const locale of locales) {
         if (existingLocales.has(locale)) continue;
-        addLocaleToVariantGroup(proj, variantGroupUuid, locale);
+        addLocaleToVariantGroup(proj, variantGroupUuid, locale, appFolderName);
         added++;
     }
 
@@ -200,8 +200,9 @@ function dumpVariantGroupState(proj, variantGroupUuid) {
             if (!Array.isArray(g.children)) continue;
             const match = g.children.find(c => c && c.value === variantGroupUuid);
             if (match) {
-                const label = (g.name || g.path || '').replace(/^"|"$/g, '') || gKey;
-                parentInfo = `${gKey} (${label})`;
+                const rawName = (g.name || '').replace(/^"|"$/g, '') || '(unset)';
+                const rawPath = (g.path || '').replace(/^"|"$/g, '') || '(unset)';
+                parentInfo = `${gKey} name="${rawName}" path="${rawPath}"`;
                 break;
             }
         }
@@ -332,16 +333,20 @@ function listVariantGroupLocales(proj, variantGroupUuid) {
     return locales;
 }
 
-function addLocaleToVariantGroup(proj, variantGroupUuid, locale) {
+function addLocaleToVariantGroup(proj, variantGroupUuid, locale, appFolderName) {
     const fileRefUuid = require('crypto').randomBytes(12).toString('hex').toUpperCase();
     const fileRefs = proj.hash.project.objects.PBXFileReference;
+    // Use SOURCE_ROOT-relative paths to bypass any quirks of group path
+    // inheritance. SOURCE_ROOT == platforms/ios/ (the .xcodeproj's parent).
+    // Our .lproj files live at platforms/ios/<appFolderName>/<locale>.lproj/.
+    const relPath = `${appFolderName}/${locale}.lproj/InfoPlist.strings`;
     fileRefs[fileRefUuid] = {
         isa: 'PBXFileReference',
         fileEncoding: 4,
         lastKnownFileType: 'text.plist.strings',
         name: `"${locale}"`,
-        path: `"${locale}.lproj/InfoPlist.strings"`,
-        sourceTree: '"<group>"',
+        path: `"${relPath}"`,
+        sourceTree: 'SOURCE_ROOT',
     };
     fileRefs[fileRefUuid + '_comment'] = locale;
     proj.addToPbxVariantGroup({ fileRef: fileRefUuid, basename: locale }, variantGroupUuid);
