@@ -5,7 +5,6 @@
 [![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20Android-lightgrey)](#)
 [![Cordova](https://img.shields.io/badge/cordova-%E2%89%A59.0.0-brightgreen)](https://cordova.apache.org/)
 [![OutSystems 11](https://img.shields.io/badge/OutSystems-11-d92b1d)](https://www.outsystems.com/)
-[![Issues](https://img.shields.io/github/issues/promonteiro89/cordova-plugin-localized-app-name)](https://github.com/promonteiro89/cordova-plugin-localized-app-name/issues)
 
 A focused Cordova plugin that localizes your app's **home-screen display name** on iOS and Android based on the device language.
 
