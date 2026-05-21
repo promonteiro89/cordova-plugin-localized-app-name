@@ -88,12 +88,20 @@ function writeIos(projectRoot, entries) {
         return;
     }
 
-    const writtenLocales = [];
+    // Files go under <appFolder>/Resources/<locale>.lproj/ to match the
+    // structure cordova-ios's xcodeproj already expects (its Resources group
+    // points there). The resource path used in pbxproj is either
+    // "Resources/<locale>.lproj/InfoPlist.strings" (cordova-ios <= 7) or
+    // "App/Resources/<locale>.lproj/InfoPlist.strings" (cordova-ios 8.x).
+    const isCordovaIos8 = fs.existsSync(path.join(iosDir, 'App.xcodeproj'));
+    const resourcePathPrefix = isCordovaIos8 ? 'App/Resources' : 'Resources';
+
+    const writtenLocaleResources = [];
     for (const { locale, data } of entries) {
         const displayName = data.config_ios && data.config_ios.CFBundleDisplayName;
         if (!displayName) continue;
 
-        const lprojDir = path.join(appFolder, `${locale}.lproj`);
+        const lprojDir = path.join(appFolder, 'Resources', `${locale}.lproj`);
         fs.mkdirSync(lprojDir, { recursive: true });
 
         const escaped = escapeStringsValue(displayName);
@@ -102,13 +110,14 @@ function writeIos(projectRoot, entries) {
             `"CFBundleName" = "${escaped}";\n`;
 
         fs.writeFileSync(path.join(lprojDir, 'InfoPlist.strings'), contents, 'utf8');
-        log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}"`);
-        writtenLocales.push(locale);
+        const resourcePath = `${resourcePathPrefix}/${locale}.lproj/InfoPlist.strings`;
+        log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}" (resource path: ${resourcePath})`);
+        writtenLocaleResources.push(resourcePath);
     }
-    log(`iOS: wrote ${writtenLocales.length} locale file(s).`);
+    log(`iOS: wrote ${writtenLocaleResources.length} locale file(s).`);
 
-    if (writtenLocales.length > 0) {
-        registerIosLocalizations(iosDir, path.basename(appFolder), writtenLocales);
+    if (writtenLocaleResources.length > 0) {
+        registerIosLocalizations(projectRoot, iosDir, writtenLocaleResources);
     }
 }
 
@@ -116,10 +125,11 @@ function writeIos(projectRoot, entries) {
 // xcodebuild bundles them. Without this, files exist on disk but never make
 // it into the .app, and the home-screen label stays the default.
 //
-// appFolderName is the basename of the on-disk app folder (e.g. "App" on
-// cordova-ios 8.x, "<ProjectName>" on older versions). We need the variant
-// group attached to the matching Xcode group so file paths resolve correctly.
-function registerIosLocalizations(iosDir, appFolderName, locales) {
+// CRITICAL: after writing the pbxproj, we must purge cordova-ios's in-memory
+// project file cache. Otherwise cordova-ios's later operations (e.g.
+// ProvisioningProfile signing setup) write their stale cached pbxproj copy
+// back to disk, silently undoing our edits.
+function registerIosLocalizations(projectRoot, iosDir, resourcePaths) {
     const pbxprojPath = findPbxproj(iosDir);
     if (!pbxprojPath) {
         warn('iOS: no project.pbxproj found, skipping Xcode registration.');
@@ -137,96 +147,73 @@ function registerIosLocalizations(iosDir, appFolderName, locales) {
     const proj = xcode.project(pbxprojPath);
     proj.parseSync();
 
-    dumpTargetsAndPhases(proj, 'before');
+    // Find or create the InfoPlist.strings variant group.
+    let variantGroupKey = proj.findPBXVariantGroupKey({ name: 'InfoPlist.strings' });
+    if (!variantGroupKey) {
+        const vg = proj.addLocalizationVariantGroup('InfoPlist.strings');
+        variantGroupKey = vg.fileRef;
+        log(`iOS: created InfoPlist.strings variant group (${variantGroupKey}).`);
+    } else {
+        log(`iOS: reusing existing InfoPlist.strings variant group (${variantGroupKey}).`);
+    }
 
-    const variantGroupUuid = findOrCreateVariantGroup(proj, 'InfoPlist.strings', appFolderName);
-    const existingLocales = listVariantGroupLocales(proj, variantGroupUuid);
-
+    // Add each resource path to the variant group if not already present.
+    const existingPaths = collectExistingFileRefPaths(proj);
     let added = 0;
-    for (const locale of locales) {
-        if (existingLocales.has(locale)) continue;
-        addLocaleToVariantGroup(proj, variantGroupUuid, locale, appFolderName);
+    for (const resourcePath of resourcePaths) {
+        if (existingPaths.has(resourcePath)) {
+            log(`iOS: ${resourcePath} already in pbxproj, skipping.`);
+            continue;
+        }
+        proj.addResourceFile(resourcePath, { variantGroup: true }, variantGroupKey);
+        log(`iOS: added ${resourcePath} to variant group.`);
         added++;
     }
 
     fs.writeFileSync(pbxprojPath, proj.writeSync());
     log(`iOS: registered ${added} locale(s) in Xcode project (variant group: InfoPlist.strings).`);
 
-    dumpVariantGroupState(proj, variantGroupUuid);
-    dumpTargetsAndPhases(proj, 'after');
+    purgeCordovaIosProjectCache(projectRoot);
 }
 
-function dumpTargetsAndPhases(proj, label) {
-    try {
-        const targets = proj.hash.project.objects.PBXNativeTarget || {};
-        log(`iOS DIAG (${label}): native targets:`);
-        for (const key of Object.keys(targets)) {
-            if (key.endsWith('_comment')) continue;
-            const t = targets[key];
-            const name = (t.name || '').replace(/^"|"$/g, '');
-            const productType = (t.productType || '').replace(/^"|"$/g, '');
-            const phases = (t.buildPhases || []).map(p => p.comment).join(', ');
-            log(`  - ${key} name="${name}" productType="${productType}" phases=[${phases}]`);
-        }
-        const resPhases = proj.hash.project.objects.PBXResourcesBuildPhase || {};
-        log(`iOS DIAG (${label}): PBXResourcesBuildPhase entries:`);
-        for (const key of Object.keys(resPhases)) {
-            if (key.endsWith('_comment')) continue;
-            const p = resPhases[key];
-            const files = (p.files || []).map(f => f.comment).join(', ');
-            log(`  - ${key} files=[${files}]`);
-        }
-    } catch (e) {
-        warn(`iOS DIAG dump failed (${label}): ${e.message}`);
+function collectExistingFileRefPaths(proj) {
+    const paths = new Set();
+    const refs = proj.hash.project.objects.PBXFileReference || {};
+    for (const key of Object.keys(refs)) {
+        if (key.endsWith('_comment')) continue;
+        const ref = refs[key];
+        const refPath = (ref && ref.path || '').replace(/^"|"$/g, '');
+        if (refPath) paths.add(refPath);
     }
+    return paths;
 }
 
-function dumpVariantGroupState(proj, variantGroupUuid) {
-    try {
-        const variantGroups = proj.hash.project.objects.PBXVariantGroup || {};
-        const vg = variantGroups[variantGroupUuid];
-        if (!vg) {
-            warn(`iOS DIAG: variant group ${variantGroupUuid} missing from PBXVariantGroup section!`);
-            return;
-        }
-        const children = (vg.children || []).map(c => `${c.value}=${c.comment}`).join(', ');
-        log(`iOS DIAG: variant group ${variantGroupUuid} name="${(vg.name || '').replace(/^"|"$/g, '')}" children=[${children}]`);
+// Cordova-ios caches the parsed pbxproj in memory. Operations that come after
+// our hook (e.g. ProvisioningProfile signing modification) write that cached
+// copy back to disk, overwriting our changes. Purging the cache forces them
+// to re-read the (now-updated) file from disk.
+function purgeCordovaIosProjectCache(projectRoot) {
+    const platformPath = path.join(projectRoot, 'platforms', 'ios');
+    const candidates = [
+        path.join(platformPath, 'cordova', 'lib', 'projectFile.js'),
+        path.join(projectRoot, 'node_modules', 'cordova-ios', 'lib', 'projectFile.js'),
+    ];
 
-        const groups = proj.hash.project.objects.PBXGroup || {};
-        let parentInfo = 'NONE (orphaned!)';
-        for (const gKey of Object.keys(groups)) {
-            if (gKey.endsWith('_comment')) continue;
-            const g = groups[gKey];
-            if (!Array.isArray(g.children)) continue;
-            const match = g.children.find(c => c && c.value === variantGroupUuid);
-            if (match) {
-                const rawName = (g.name || '').replace(/^"|"$/g, '') || '(unset)';
-                const rawPath = (g.path || '').replace(/^"|"$/g, '') || '(unset)';
-                parentInfo = `${gKey} name="${rawName}" path="${rawPath}"`;
-                break;
+    for (const candidate of candidates) {
+        if (!fs.existsSync(candidate)) continue;
+        try {
+            delete require.cache[require.resolve(candidate)];
+            const api = require(candidate);
+            if (typeof api.purgeProjectFileCache === 'function') {
+                api.purgeProjectFileCache(platformPath);
+                log(`iOS: purged cordova-ios project file cache via ${path.relative(projectRoot, candidate)}.`);
+                return;
             }
+        } catch (e) {
+            warn(`iOS: could not purge cordova-ios cache via ${candidate}: ${e.message}`);
         }
-        log(`iOS DIAG: variant group's parent PBXGroup: ${parentInfo}`);
-
-        const buildFiles = proj.hash.project.objects.PBXBuildFile || {};
-        const matchingBuildFile = Object.keys(buildFiles)
-            .filter(k => !k.endsWith('_comment'))
-            .find(k => buildFiles[k] && buildFiles[k].fileRef === variantGroupUuid);
-        log(`iOS DIAG: PBXBuildFile entry for variant group: ${matchingBuildFile || 'MISSING'}`);
-
-        if (matchingBuildFile) {
-            const resPhases = proj.hash.project.objects.PBXResourcesBuildPhase || {};
-            const inPhases = [];
-            for (const pKey of Object.keys(resPhases)) {
-                if (pKey.endsWith('_comment')) continue;
-                const p = resPhases[pKey];
-                if ((p.files || []).some(f => f && f.value === matchingBuildFile)) inPhases.push(pKey);
-            }
-            log(`iOS DIAG: PBXBuildFile present in resources build phase(s): ${inPhases.join(', ') || 'NONE'}`);
-        }
-    } catch (e) {
-        warn(`iOS DIAG dump failed: ${e.message}`);
     }
+    warn('iOS: cordova-ios projectFile.js not found, could not purge pbxproj cache. Subsequent cordova-ios operations may overwrite our edits.');
 }
 
 function findPbxproj(iosDir) {
@@ -238,118 +225,6 @@ function findPbxproj(iosDir) {
         }
     }
     return null;
-}
-
-function findOrCreateVariantGroup(proj, name, appFolderName) {
-    const section = proj.hash.project.objects.PBXVariantGroup || {};
-    for (const key of Object.keys(section)) {
-        if (key.endsWith('_comment')) continue;
-        const entry = section[key];
-        const entryName = entry && (entry.name || '').replace(/^"|"$/g, '');
-        if (entryName === name) {
-            log(`iOS: reusing existing "${name}" variant group (${key})`);
-            return key;
-        }
-    }
-    // Replicate xcode pkg's addLocalizationVariantGroup but attach to the group
-    // that maps to the app folder on disk (where our .lproj files live), so
-    // file paths with sourceTree="<group>" resolve correctly. cordova-ios 8.x
-    // uses "App"; older cordova-ios and OutSystems MABS use "<ProjectName>".
-    const variantGroupKey = proj.pbxCreateVariantGroup(name);
-    const hostInfo = findAppHostGroup(proj, appFolderName);
-    if (hostInfo) {
-        proj.addToPbxGroup(variantGroupKey, hostInfo.key);
-        log(`iOS: attached variant group to "${hostInfo.label}" (${hostInfo.key}) via ${hostInfo.via}`);
-    } else {
-        warn(`iOS: could not find a suitable host group for variant group (tried Info.plist parent, "${appFolderName}", App, Resources).`);
-    }
-
-    const buildFileEntry = {
-        uuid: proj.generateUuid(),
-        fileRef: variantGroupKey,
-        basename: name,
-    };
-    proj.addToPbxBuildFileSection(buildFileEntry);
-    proj.addToPbxResourcesBuildPhase(buildFileEntry);
-
-    return variantGroupKey;
-}
-
-// Find the Xcode group that should host the InfoPlist.strings variant group.
-// Best strategy: find the group that already contains the project's Info.plist
-// file reference — by definition that group's path resolves to where Info.plist
-// lives, which is the same folder where our .lproj/InfoPlist.strings live.
-function findAppHostGroup(proj, appFolderName) {
-    // Strategy 1: find the group containing the Info.plist file reference.
-    const fileRefs = proj.hash.project.objects.PBXFileReference || {};
-    let infoPlistRefKey = null;
-    for (const key of Object.keys(fileRefs)) {
-        if (key.endsWith('_comment')) continue;
-        const ref = fileRefs[key];
-        const refPath = (ref && ref.path || '').replace(/^"|"$/g, '');
-        if (/(^|\/)([^/]+-)?Info\.plist$/.test(refPath)) {
-            infoPlistRefKey = key;
-            break;
-        }
-    }
-    if (infoPlistRefKey) {
-        const groups = proj.hash.project.objects.PBXGroup || {};
-        for (const groupKey of Object.keys(groups)) {
-            if (groupKey.endsWith('_comment')) continue;
-            const group = groups[groupKey];
-            if (!group || !Array.isArray(group.children)) continue;
-            for (const child of group.children) {
-                if (child && child.value === infoPlistRefKey) {
-                    const label = (group.name || group.path || '').replace(/^"|"$/g, '') || groupKey;
-                    return { key: groupKey, label, via: 'Info.plist parent group' };
-                }
-            }
-        }
-    }
-
-    // Strategy 2: fall back to known group names.
-    const candidates = [
-        { q: { path: appFolderName }, via: `path == "${appFolderName}"` },
-        { q: { name: appFolderName }, via: `name == "${appFolderName}"` },
-        { q: { name: 'App' },         via: 'name == "App"' },
-        { q: { path: 'App' },         via: 'path == "App"' },
-        { q: { name: 'Resources' },   via: 'name == "Resources" (last resort)' },
-    ];
-    for (const c of candidates) {
-        const key = proj.findPBXGroupKey(c.q);
-        if (key) return { key, label: Object.values(c.q)[0], via: c.via };
-    }
-    return null;
-}
-
-function listVariantGroupLocales(proj, variantGroupUuid) {
-    const section = proj.hash.project.objects.PBXVariantGroup || {};
-    const group = section[variantGroupUuid];
-    const locales = new Set();
-    if (!group || !Array.isArray(group.children)) return locales;
-    for (const child of group.children) {
-        if (child && child.comment) locales.add(child.comment);
-    }
-    return locales;
-}
-
-function addLocaleToVariantGroup(proj, variantGroupUuid, locale, appFolderName) {
-    const fileRefUuid = require('crypto').randomBytes(12).toString('hex').toUpperCase();
-    const fileRefs = proj.hash.project.objects.PBXFileReference;
-    // Use SOURCE_ROOT-relative paths to bypass any quirks of group path
-    // inheritance. SOURCE_ROOT == platforms/ios/ (the .xcodeproj's parent).
-    // Our .lproj files live at platforms/ios/<appFolderName>/<locale>.lproj/.
-    const relPath = `${appFolderName}/${locale}.lproj/InfoPlist.strings`;
-    fileRefs[fileRefUuid] = {
-        isa: 'PBXFileReference',
-        fileEncoding: 4,
-        lastKnownFileType: 'text.plist.strings',
-        name: `"${locale}"`,
-        path: `"${relPath}"`,
-        sourceTree: 'SOURCE_ROOT',
-    };
-    fileRefs[fileRefUuid + '_comment'] = locale;
-    proj.addToPbxVariantGroup({ fileRef: fileRefUuid, basename: locale }, variantGroupUuid);
 }
 
 function writeAndroid(projectRoot, entries) {
