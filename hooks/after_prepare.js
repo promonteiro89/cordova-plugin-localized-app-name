@@ -108,14 +108,18 @@ function writeIos(projectRoot, entries) {
     log(`iOS: wrote ${writtenLocales.length} locale file(s).`);
 
     if (writtenLocales.length > 0) {
-        registerIosLocalizations(iosDir, writtenLocales);
+        registerIosLocalizations(iosDir, path.basename(appFolder), writtenLocales);
     }
 }
 
 // Register the per-locale InfoPlist.strings files in the Xcode project so
 // xcodebuild bundles them. Without this, files exist on disk but never make
 // it into the .app, and the home-screen label stays the default.
-function registerIosLocalizations(iosDir, locales) {
+//
+// appFolderName is the basename of the on-disk app folder (e.g. "App" on
+// cordova-ios 8.x, "<ProjectName>" on older versions). We need the variant
+// group attached to the matching Xcode group so file paths resolve correctly.
+function registerIosLocalizations(iosDir, appFolderName, locales) {
     const pbxprojPath = findPbxproj(iosDir);
     if (!pbxprojPath) {
         warn('iOS: no project.pbxproj found, skipping Xcode registration.');
@@ -133,7 +137,7 @@ function registerIosLocalizations(iosDir, locales) {
     const proj = xcode.project(pbxprojPath);
     proj.parseSync();
 
-    const variantGroupUuid = findOrCreateVariantGroup(proj, 'InfoPlist.strings');
+    const variantGroupUuid = findOrCreateVariantGroup(proj, 'InfoPlist.strings', appFolderName);
     const existingLocales = listVariantGroupLocales(proj, variantGroupUuid);
 
     let added = 0;
@@ -158,7 +162,7 @@ function findPbxproj(iosDir) {
     return null;
 }
 
-function findOrCreateVariantGroup(proj, name) {
+function findOrCreateVariantGroup(proj, name, appFolderName) {
     const section = proj.hash.project.objects.PBXVariantGroup || {};
     for (const key of Object.keys(section)) {
         if (key.endsWith('_comment')) continue;
@@ -166,14 +170,12 @@ function findOrCreateVariantGroup(proj, name) {
         const entryName = entry && (entry.name || '').replace(/^"|"$/g, '');
         if (entryName === name) return key;
     }
-    // Replicate xcode pkg's addLocalizationVariantGroup but attach to the App
-    // group (where the .lproj files actually live) rather than Resources.
-    // Cordova's existing storyboard variant groups follow the same pattern.
+    // Replicate xcode pkg's addLocalizationVariantGroup but attach to the group
+    // that maps to the app folder on disk (where our .lproj files live), so
+    // file paths with sourceTree="<group>" resolve correctly. Cordova-ios 8.x
+    // uses "App"; older versions and OutSystems MABS use "<ProjectName>".
     const variantGroupKey = proj.pbxCreateVariantGroup(name);
-    const hostGroupKey =
-        proj.findPBXGroupKey({ name: 'App' }) ||
-        proj.findPBXGroupKey({ path: 'App' }) ||
-        proj.findPBXGroupKey({ name: 'Resources' });
+    const hostGroupKey = findAppHostGroup(proj, appFolderName);
     if (hostGroupKey) proj.addToPbxGroup(variantGroupKey, hostGroupKey);
 
     const buildFileEntry = {
@@ -185,6 +187,21 @@ function findOrCreateVariantGroup(proj, name) {
     proj.addToPbxResourcesBuildPhase(buildFileEntry);
 
     return variantGroupKey;
+}
+
+function findAppHostGroup(proj, appFolderName) {
+    const candidates = [
+        { path: appFolderName },
+        { name: appFolderName },
+        { name: 'App' },
+        { path: 'App' },
+        { name: 'Resources' },
+    ];
+    for (const c of candidates) {
+        const key = proj.findPBXGroupKey(c);
+        if (key) return key;
+    }
+    return null;
 }
 
 function listVariantGroupLocales(proj, variantGroupUuid) {
