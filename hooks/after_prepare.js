@@ -6,37 +6,43 @@ const path = require('path');
 const LOG_PREFIX = '[localized-app-name]';
 
 const ANDROID_STRING_KEYS = ['app_name', 'launcher_name', 'activity_name'];
-
 const LOCALE_FILENAME_PATTERN = /^[a-zA-Z]{2,3}([-_][a-zA-Z0-9]+)*\.json$/;
 
 module.exports = function (context) {
-    const projectRoot = context.opts.projectRoot;
-    const discovery = findTranslationsDir(projectRoot);
+    log('============== HOOK STARTING ==============');
+    try {
+        const projectRoot = context.opts.projectRoot;
+        log(`projectRoot: ${projectRoot}`);
+        log(`context.opts.platforms: ${JSON.stringify(context.opts.platforms)}`);
 
-    if (!discovery) {
-        console.log(`${LOG_PREFIX} No locale JSON files found in any known location, skipping.`);
-        console.log(`${LOG_PREFIX} Searched: translations/app/, www/translations/app/, www/`);
-        return;
+        const discovery = findTranslationsDir(projectRoot);
+        if (!discovery) {
+            log('No locale JSON files found in any known location. Aborting.');
+            return;
+        }
+        log(`Using locale files from: ${path.relative(projectRoot, discovery.dir) || '.'}`);
+        log(`Found ${discovery.files.length} locale file(s): ${discovery.files.join(', ')}`);
+
+        const entries = discovery.files
+            .map(file => {
+                const locale = path.basename(file, path.extname(file));
+                try {
+                    const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
+                    return { locale, data };
+                } catch (e) {
+                    err(`Failed to parse ${file}: ${e.message}`);
+                    return null;
+                }
+            })
+            .filter(Boolean);
+
+        writeIos(projectRoot, entries);
+        writeAndroid(projectRoot, entries);
+
+        log('============== HOOK DONE ==============');
+    } catch (e) {
+        err(`Hook crashed: ${e.stack || e.message}`);
     }
-
-    console.log(`${LOG_PREFIX} Reading locale files from ${path.relative(projectRoot, discovery.dir) || '.'}`);
-
-    const platforms = context.opts.platforms || [];
-    const entries = discovery.files
-        .map(file => {
-            const locale = path.basename(file, path.extname(file));
-            try {
-                const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
-                return { locale, data };
-            } catch (e) {
-                console.error(`${LOG_PREFIX} Failed to parse ${file}: ${e.message}`);
-                return null;
-            }
-        })
-        .filter(Boolean);
-
-    if (platforms.includes('ios')) writeIos(projectRoot, entries);
-    if (platforms.includes('android')) writeAndroid(projectRoot, entries);
 };
 
 function findTranslationsDir(projectRoot) {
@@ -44,12 +50,27 @@ function findTranslationsDir(projectRoot) {
         path.join(projectRoot, 'translations', 'app'),
         path.join(projectRoot, 'www', 'translations', 'app'),
         path.join(projectRoot, 'www'),
+        path.join(projectRoot, 'platforms', 'android', 'app', 'src', 'main', 'assets', 'www'),
+        path.join(projectRoot, 'platforms', 'android', 'assets', 'www'),
+        path.join(projectRoot, 'platforms', 'ios', 'www'),
     ];
 
     for (const dir of candidates) {
-        if (!fs.existsSync(dir)) continue;
-        const files = fs.readdirSync(dir).filter(f => isLocaleFile(dir, f));
-        if (files.length > 0) return { dir, files };
+        const exists = fs.existsSync(dir);
+        log(`  candidate: ${path.relative(projectRoot, dir) || '.'} (${exists ? 'exists' : 'missing'})`);
+        if (!exists) continue;
+
+        let files;
+        try {
+            files = fs.readdirSync(dir).filter(f => isLocaleFile(dir, f));
+        } catch (e) {
+            err(`  cannot read ${dir}: ${e.message}`);
+            continue;
+        }
+        if (files.length > 0) {
+            return { dir, files };
+        }
+        log(`    -> directory has no matching locale JSONs`);
     }
     return null;
 }
@@ -66,14 +87,19 @@ function isLocaleFile(dir, filename) {
 
 function writeIos(projectRoot, entries) {
     const iosDir = path.join(projectRoot, 'platforms', 'ios');
-    if (!fs.existsSync(iosDir)) return;
-
-    const appFolder = findIosAppFolder(iosDir);
-    if (!appFolder) {
-        console.warn(`${LOG_PREFIX} Could not locate iOS app folder, skipping iOS.`);
+    if (!fs.existsSync(iosDir)) {
+        log('iOS: platforms/ios not present, skipping.');
         return;
     }
 
+    const appFolder = findIosAppFolder(iosDir);
+    if (!appFolder) {
+        warn('iOS: could not locate the app folder (no *-Info.plist), skipping.');
+        return;
+    }
+    log(`iOS app folder: ${path.relative(projectRoot, appFolder)}`);
+
+    let wrote = 0;
     for (const { locale, data } of entries) {
         const displayName = data.config_ios && data.config_ios.CFBundleDisplayName;
         if (!displayName) continue;
@@ -87,14 +113,21 @@ function writeIos(projectRoot, entries) {
             `"CFBundleName" = "${escaped}";\n`;
 
         fs.writeFileSync(path.join(lprojDir, 'InfoPlist.strings'), contents, 'utf8');
-        console.log(`${LOG_PREFIX} iOS  -> ${locale}.lproj/InfoPlist.strings`);
+        log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}"`);
+        wrote++;
     }
+    log(`iOS: wrote ${wrote} locale file(s).`);
 }
 
 function writeAndroid(projectRoot, entries) {
-    const resDir = path.join(projectRoot, 'platforms', 'android', 'app', 'src', 'main', 'res');
-    if (!fs.existsSync(resDir)) return;
+    const resDir = resolveAndroidResDir(projectRoot);
+    if (!resDir) {
+        log('Android: no platforms/android res directory found, skipping.');
+        return;
+    }
+    log(`Android res directory: ${path.relative(projectRoot, resDir)}`);
 
+    let wrote = 0;
     for (const { locale, data } of entries) {
         const appName = data.config_android && data.config_android.app_name;
         if (!appName) continue;
@@ -113,8 +146,21 @@ function writeAndroid(projectRoot, entries) {
         }
 
         fs.writeFileSync(stringsPath, xml, 'utf8');
-        console.log(`${LOG_PREFIX} Android -> values-${androidLocale}/strings.xml`);
+        log(`Android -> values-${androidLocale}/strings.xml = "${appName}"`);
+        wrote++;
     }
+    log(`Android: wrote ${wrote} locale file(s).`);
+}
+
+function resolveAndroidResDir(projectRoot) {
+    const candidates = [
+        path.join(projectRoot, 'platforms', 'android', 'app', 'src', 'main', 'res'),
+        path.join(projectRoot, 'platforms', 'android', 'res'),
+    ];
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+    }
+    return null;
 }
 
 function upsertAndroidString(xml, key, value) {
@@ -131,8 +177,10 @@ function findIosAppFolder(iosDir) {
     for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const candidate = path.join(iosDir, entry.name);
-        const plistMatch = fs.readdirSync(candidate).some(f => f.endsWith('-Info.plist'));
-        if (plistMatch) return candidate;
+        try {
+            const plistMatch = fs.readdirSync(candidate).some(f => f.endsWith('-Info.plist'));
+            if (plistMatch) return candidate;
+        } catch { /* skip */ }
     }
     return null;
 }
@@ -158,3 +206,7 @@ function escapeXmlValue(s) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '\\\'');
 }
+
+function log(msg)  { console.log(`${LOG_PREFIX} ${msg}`); }
+function warn(msg) { console.warn(`${LOG_PREFIX} WARN: ${msg}`); }
+function err(msg)  { console.error(`${LOG_PREFIX} ERROR: ${msg}`); }
