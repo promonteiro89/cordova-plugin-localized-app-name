@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-localized-app-name",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Localizes the Cordova app's home-screen display name on iOS and Android based on the device language.",
   "main": "hooks/after_prepare.js",
   "scripts": {
@@ -26,7 +26,7 @@
   },
   "engines": {
     "cordovaDependencies": {
-      "1.0.2": {
+      "1.0.3": {
         "cordova": ">=9.0.0"
       }
     }

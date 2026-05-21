@@ -137,6 +137,8 @@ function registerIosLocalizations(iosDir, appFolderName, locales) {
     const proj = xcode.project(pbxprojPath);
     proj.parseSync();
 
+    dumpTargetsAndPhases(proj, 'before');
+
     const variantGroupUuid = findOrCreateVariantGroup(proj, 'InfoPlist.strings', appFolderName);
     const existingLocales = listVariantGroupLocales(proj, variantGroupUuid);
 
@@ -149,6 +151,81 @@ function registerIosLocalizations(iosDir, appFolderName, locales) {
 
     fs.writeFileSync(pbxprojPath, proj.writeSync());
     log(`iOS: registered ${added} locale(s) in Xcode project (variant group: InfoPlist.strings).`);
+
+    dumpVariantGroupState(proj, variantGroupUuid);
+    dumpTargetsAndPhases(proj, 'after');
+}
+
+function dumpTargetsAndPhases(proj, label) {
+    try {
+        const targets = proj.hash.project.objects.PBXNativeTarget || {};
+        log(`iOS DIAG (${label}): native targets:`);
+        for (const key of Object.keys(targets)) {
+            if (key.endsWith('_comment')) continue;
+            const t = targets[key];
+            const name = (t.name || '').replace(/^"|"$/g, '');
+            const productType = (t.productType || '').replace(/^"|"$/g, '');
+            const phases = (t.buildPhases || []).map(p => p.comment).join(', ');
+            log(`  - ${key} name="${name}" productType="${productType}" phases=[${phases}]`);
+        }
+        const resPhases = proj.hash.project.objects.PBXResourcesBuildPhase || {};
+        log(`iOS DIAG (${label}): PBXResourcesBuildPhase entries:`);
+        for (const key of Object.keys(resPhases)) {
+            if (key.endsWith('_comment')) continue;
+            const p = resPhases[key];
+            const files = (p.files || []).map(f => f.comment).join(', ');
+            log(`  - ${key} files=[${files}]`);
+        }
+    } catch (e) {
+        warn(`iOS DIAG dump failed (${label}): ${e.message}`);
+    }
+}
+
+function dumpVariantGroupState(proj, variantGroupUuid) {
+    try {
+        const variantGroups = proj.hash.project.objects.PBXVariantGroup || {};
+        const vg = variantGroups[variantGroupUuid];
+        if (!vg) {
+            warn(`iOS DIAG: variant group ${variantGroupUuid} missing from PBXVariantGroup section!`);
+            return;
+        }
+        const children = (vg.children || []).map(c => `${c.value}=${c.comment}`).join(', ');
+        log(`iOS DIAG: variant group ${variantGroupUuid} name="${(vg.name || '').replace(/^"|"$/g, '')}" children=[${children}]`);
+
+        const groups = proj.hash.project.objects.PBXGroup || {};
+        let parentInfo = 'NONE (orphaned!)';
+        for (const gKey of Object.keys(groups)) {
+            if (gKey.endsWith('_comment')) continue;
+            const g = groups[gKey];
+            if (!Array.isArray(g.children)) continue;
+            const match = g.children.find(c => c && c.value === variantGroupUuid);
+            if (match) {
+                const label = (g.name || g.path || '').replace(/^"|"$/g, '') || gKey;
+                parentInfo = `${gKey} (${label})`;
+                break;
+            }
+        }
+        log(`iOS DIAG: variant group's parent PBXGroup: ${parentInfo}`);
+
+        const buildFiles = proj.hash.project.objects.PBXBuildFile || {};
+        const matchingBuildFile = Object.keys(buildFiles)
+            .filter(k => !k.endsWith('_comment'))
+            .find(k => buildFiles[k] && buildFiles[k].fileRef === variantGroupUuid);
+        log(`iOS DIAG: PBXBuildFile entry for variant group: ${matchingBuildFile || 'MISSING'}`);
+
+        if (matchingBuildFile) {
+            const resPhases = proj.hash.project.objects.PBXResourcesBuildPhase || {};
+            const inPhases = [];
+            for (const pKey of Object.keys(resPhases)) {
+                if (pKey.endsWith('_comment')) continue;
+                const p = resPhases[pKey];
+                if ((p.files || []).some(f => f && f.value === matchingBuildFile)) inPhases.push(pKey);
+            }
+            log(`iOS DIAG: PBXBuildFile present in resources build phase(s): ${inPhases.join(', ') || 'NONE'}`);
+        }
+    } catch (e) {
+        warn(`iOS DIAG dump failed: ${e.message}`);
+    }
 }
 
 function findPbxproj(iosDir) {
