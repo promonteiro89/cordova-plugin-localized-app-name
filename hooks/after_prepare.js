@@ -111,7 +111,7 @@ function writeIos(projectRoot, entries) {
 
         fs.writeFileSync(path.join(lprojDir, 'InfoPlist.strings'), contents, 'utf8');
         const resourcePath = `${resourcePathPrefix}/${locale}.lproj/InfoPlist.strings`;
-        log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}" (resource path: ${resourcePath})`);
+        log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}"`);
         writtenLocaleResources.push(resourcePath);
     }
     log(`iOS: wrote ${writtenLocaleResources.length} locale file(s).`);
@@ -152,26 +152,19 @@ function registerIosLocalizations(projectRoot, iosDir, resourcePaths) {
     if (!variantGroupKey) {
         const vg = proj.addLocalizationVariantGroup('InfoPlist.strings');
         variantGroupKey = vg.fileRef;
-        log(`iOS: created InfoPlist.strings variant group (${variantGroupKey}).`);
-    } else {
-        log(`iOS: reusing existing InfoPlist.strings variant group (${variantGroupKey}).`);
     }
 
     // Add each resource path to the variant group if not already present.
     const existingPaths = collectExistingFileRefPaths(proj);
     let added = 0;
     for (const resourcePath of resourcePaths) {
-        if (existingPaths.has(resourcePath)) {
-            log(`iOS: ${resourcePath} already in pbxproj, skipping.`);
-            continue;
-        }
+        if (existingPaths.has(resourcePath)) continue;
         proj.addResourceFile(resourcePath, { variantGroup: true }, variantGroupKey);
-        log(`iOS: added ${resourcePath} to variant group.`);
         added++;
     }
 
     fs.writeFileSync(pbxprojPath, proj.writeSync());
-    log(`iOS: registered ${added} locale(s) in Xcode project (variant group: InfoPlist.strings).`);
+    log(`iOS: registered ${added} new locale(s) (${resourcePaths.length} total) in Xcode project.`);
 
     purgeCordovaIosProjectCache(projectRoot);
 }
