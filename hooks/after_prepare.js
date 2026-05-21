@@ -88,7 +88,7 @@ function writeIos(projectRoot, entries) {
         return;
     }
 
-    let wrote = 0;
+    const writtenLocales = [];
     for (const { locale, data } of entries) {
         const displayName = data.config_ios && data.config_ios.CFBundleDisplayName;
         if (!displayName) continue;
@@ -103,9 +103,114 @@ function writeIos(projectRoot, entries) {
 
         fs.writeFileSync(path.join(lprojDir, 'InfoPlist.strings'), contents, 'utf8');
         log(`iOS  -> ${locale}.lproj/InfoPlist.strings = "${displayName}"`);
-        wrote++;
+        writtenLocales.push(locale);
     }
-    log(`iOS: wrote ${wrote} locale file(s).`);
+    log(`iOS: wrote ${writtenLocales.length} locale file(s).`);
+
+    if (writtenLocales.length > 0) {
+        registerIosLocalizations(iosDir, writtenLocales);
+    }
+}
+
+// Register the per-locale InfoPlist.strings files in the Xcode project so
+// xcodebuild bundles them. Without this, files exist on disk but never make
+// it into the .app, and the home-screen label stays the default.
+function registerIosLocalizations(iosDir, locales) {
+    const pbxprojPath = findPbxproj(iosDir);
+    if (!pbxprojPath) {
+        warn('iOS: no project.pbxproj found, skipping Xcode registration.');
+        return;
+    }
+
+    let xcode;
+    try {
+        xcode = require('xcode');
+    } catch {
+        warn('iOS: "xcode" npm package not found. Skipping Xcode registration. Install cordova-ios >= 4.x or add "xcode" to your project.');
+        return;
+    }
+
+    const proj = xcode.project(pbxprojPath);
+    proj.parseSync();
+
+    const variantGroupUuid = findOrCreateVariantGroup(proj, 'InfoPlist.strings');
+    const existingLocales = listVariantGroupLocales(proj, variantGroupUuid);
+
+    let added = 0;
+    for (const locale of locales) {
+        if (existingLocales.has(locale)) continue;
+        addLocaleToVariantGroup(proj, variantGroupUuid, locale);
+        added++;
+    }
+
+    fs.writeFileSync(pbxprojPath, proj.writeSync());
+    log(`iOS: registered ${added} locale(s) in Xcode project (variant group: InfoPlist.strings).`);
+}
+
+function findPbxproj(iosDir) {
+    const entries = fs.readdirSync(iosDir, { withFileTypes: true });
+    for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.endsWith('.xcodeproj')) {
+            const p = path.join(iosDir, entry.name, 'project.pbxproj');
+            if (fs.existsSync(p)) return p;
+        }
+    }
+    return null;
+}
+
+function findOrCreateVariantGroup(proj, name) {
+    const section = proj.hash.project.objects.PBXVariantGroup || {};
+    for (const key of Object.keys(section)) {
+        if (key.endsWith('_comment')) continue;
+        const entry = section[key];
+        const entryName = entry && (entry.name || '').replace(/^"|"$/g, '');
+        if (entryName === name) return key;
+    }
+    // Replicate xcode pkg's addLocalizationVariantGroup but attach to the App
+    // group (where the .lproj files actually live) rather than Resources.
+    // Cordova's existing storyboard variant groups follow the same pattern.
+    const variantGroupKey = proj.pbxCreateVariantGroup(name);
+    const hostGroupKey =
+        proj.findPBXGroupKey({ name: 'App' }) ||
+        proj.findPBXGroupKey({ path: 'App' }) ||
+        proj.findPBXGroupKey({ name: 'Resources' });
+    if (hostGroupKey) proj.addToPbxGroup(variantGroupKey, hostGroupKey);
+
+    const buildFileEntry = {
+        uuid: proj.generateUuid(),
+        fileRef: variantGroupKey,
+        basename: name,
+    };
+    proj.addToPbxBuildFileSection(buildFileEntry);
+    proj.addToPbxResourcesBuildPhase(buildFileEntry);
+
+    return variantGroupKey;
+}
+
+function listVariantGroupLocales(proj, variantGroupUuid) {
+    const section = proj.hash.project.objects.PBXVariantGroup || {};
+    const group = section[variantGroupUuid];
+    const locales = new Set();
+    if (!group || !Array.isArray(group.children)) return locales;
+    for (const child of group.children) {
+        if (child && child.comment) locales.add(child.comment);
+    }
+    return locales;
+}
+
+function addLocaleToVariantGroup(proj, variantGroupUuid, locale) {
+    const fileRefUuid = require('crypto').randomBytes(12).toString('hex').toUpperCase();
+    const fileRefs = proj.hash.project.objects.PBXFileReference;
+    fileRefs[fileRefUuid] = {
+        isa: 'PBXFileReference',
+        fileEncoding: 4,
+        lastKnownFileType: 'text.plist.strings',
+        name: `"${locale}"`,
+        path: `"${locale}.lproj/InfoPlist.strings"`,
+        sourceTree: '"<group>"',
+    };
+    fileRefs[fileRefUuid + '_comment'] = locale;
+    proj.addToPbxVariantGroup({ fileRef: fileRefUuid, basename: locale }, variantGroupUuid);
 }
 
 function writeAndroid(projectRoot, entries) {
