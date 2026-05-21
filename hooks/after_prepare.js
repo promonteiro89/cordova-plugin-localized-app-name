@@ -168,15 +168,23 @@ function findOrCreateVariantGroup(proj, name, appFolderName) {
         if (key.endsWith('_comment')) continue;
         const entry = section[key];
         const entryName = entry && (entry.name || '').replace(/^"|"$/g, '');
-        if (entryName === name) return key;
+        if (entryName === name) {
+            log(`iOS: reusing existing "${name}" variant group (${key})`);
+            return key;
+        }
     }
     // Replicate xcode pkg's addLocalizationVariantGroup but attach to the group
     // that maps to the app folder on disk (where our .lproj files live), so
-    // file paths with sourceTree="<group>" resolve correctly. Cordova-ios 8.x
-    // uses "App"; older versions and OutSystems MABS use "<ProjectName>".
+    // file paths with sourceTree="<group>" resolve correctly. cordova-ios 8.x
+    // uses "App"; older cordova-ios and OutSystems MABS use "<ProjectName>".
     const variantGroupKey = proj.pbxCreateVariantGroup(name);
-    const hostGroupKey = findAppHostGroup(proj, appFolderName);
-    if (hostGroupKey) proj.addToPbxGroup(variantGroupKey, hostGroupKey);
+    const hostInfo = findAppHostGroup(proj, appFolderName);
+    if (hostInfo) {
+        proj.addToPbxGroup(variantGroupKey, hostInfo.key);
+        log(`iOS: attached variant group to "${hostInfo.label}" (${hostInfo.key}) via ${hostInfo.via}`);
+    } else {
+        warn(`iOS: could not find a suitable host group for variant group (tried Info.plist parent, "${appFolderName}", App, Resources).`);
+    }
 
     const buildFileEntry = {
         uuid: proj.generateUuid(),
@@ -189,17 +197,49 @@ function findOrCreateVariantGroup(proj, name, appFolderName) {
     return variantGroupKey;
 }
 
+// Find the Xcode group that should host the InfoPlist.strings variant group.
+// Best strategy: find the group that already contains the project's Info.plist
+// file reference — by definition that group's path resolves to where Info.plist
+// lives, which is the same folder where our .lproj/InfoPlist.strings live.
 function findAppHostGroup(proj, appFolderName) {
+    // Strategy 1: find the group containing the Info.plist file reference.
+    const fileRefs = proj.hash.project.objects.PBXFileReference || {};
+    let infoPlistRefKey = null;
+    for (const key of Object.keys(fileRefs)) {
+        if (key.endsWith('_comment')) continue;
+        const ref = fileRefs[key];
+        const refPath = (ref && ref.path || '').replace(/^"|"$/g, '');
+        if (/(^|\/)([^/]+-)?Info\.plist$/.test(refPath)) {
+            infoPlistRefKey = key;
+            break;
+        }
+    }
+    if (infoPlistRefKey) {
+        const groups = proj.hash.project.objects.PBXGroup || {};
+        for (const groupKey of Object.keys(groups)) {
+            if (groupKey.endsWith('_comment')) continue;
+            const group = groups[groupKey];
+            if (!group || !Array.isArray(group.children)) continue;
+            for (const child of group.children) {
+                if (child && child.value === infoPlistRefKey) {
+                    const label = (group.name || group.path || '').replace(/^"|"$/g, '') || groupKey;
+                    return { key: groupKey, label, via: 'Info.plist parent group' };
+                }
+            }
+        }
+    }
+
+    // Strategy 2: fall back to known group names.
     const candidates = [
-        { path: appFolderName },
-        { name: appFolderName },
-        { name: 'App' },
-        { path: 'App' },
-        { name: 'Resources' },
+        { q: { path: appFolderName }, via: `path == "${appFolderName}"` },
+        { q: { name: appFolderName }, via: `name == "${appFolderName}"` },
+        { q: { name: 'App' },         via: 'name == "App"' },
+        { q: { path: 'App' },         via: 'path == "App"' },
+        { q: { name: 'Resources' },   via: 'name == "Resources" (last resort)' },
     ];
     for (const c of candidates) {
-        const key = proj.findPBXGroupKey(c);
-        if (key) return key;
+        const key = proj.findPBXGroupKey(c.q);
+        if (key) return { key, label: Object.values(c.q)[0], via: c.via };
     }
     return null;
 }
