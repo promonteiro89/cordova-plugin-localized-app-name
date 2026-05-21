@@ -156,6 +156,10 @@ In Cordova, the `platforms/ios/` and `platforms/android/` folders are wiped and 
 
 Capacitor users don't need this — Capacitor's native projects are persistent and you edit them directly.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports, feature requests, dev setup, and the release process.
+
 ## Credits
 
 iOS pbxproj handling and cordova-ios cache-purge approach inspired by [`kelvinhokk/cordova-plugin-localization-strings`](https://github.com/kelvinhokk/cordova-plugin-localization-strings). This plugin is a more focused, OutSystems-friendly take that only handles the home-screen app name (no `Localizable.strings`, no `Settings.bundle`, no `AppShortcuts.strings`).
