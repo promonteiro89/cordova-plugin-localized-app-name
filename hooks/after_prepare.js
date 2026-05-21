@@ -8,42 +8,69 @@ const LOG_PREFIX = '[localized-app-name]';
 const ANDROID_STRING_KEYS = ['app_name', 'launcher_name', 'activity_name'];
 const LOCALE_FILENAME_PATTERN = /^[a-zA-Z]{2,3}([-_][a-zA-Z0-9]+)*\.json$/;
 
+const debugLines = [];
+function log(msg)  { const line = `${LOG_PREFIX} ${msg}`;            console.log(line);   debugLines.push(line); }
+function warn(msg) { const line = `${LOG_PREFIX} WARN: ${msg}`;      console.warn(line);  debugLines.push(line); }
+function err(msg)  { const line = `${LOG_PREFIX} ERROR: ${msg}`;     console.error(line); debugLines.push(line); }
+
 module.exports = function (context) {
     log('============== HOOK STARTING ==============');
+    log(`hook script: ${__filename}`);
+    log(`timestamp: ${new Date().toISOString()}`);
+
+    let projectRoot;
     try {
-        const projectRoot = context.opts.projectRoot;
+        projectRoot = context.opts.projectRoot;
         log(`projectRoot: ${projectRoot}`);
         log(`context.opts.platforms: ${JSON.stringify(context.opts.platforms)}`);
 
         const discovery = findTranslationsDir(projectRoot);
         if (!discovery) {
-            log('No locale JSON files found in any known location. Aborting.');
-            return;
+            log('No locale JSON files found in any known location. Aborting native writes.');
+        } else {
+            log(`Using locale files from: ${path.relative(projectRoot, discovery.dir) || '.'}`);
+            log(`Found ${discovery.files.length} locale file(s): ${discovery.files.join(', ')}`);
+
+            const entries = discovery.files
+                .map(file => {
+                    const locale = path.basename(file, path.extname(file));
+                    try {
+                        const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
+                        return { locale, data };
+                    } catch (e) {
+                        err(`Failed to parse ${file}: ${e.message}`);
+                        return null;
+                    }
+                })
+                .filter(Boolean);
+
+            writeIos(projectRoot, entries);
+            writeAndroid(projectRoot, entries);
         }
-        log(`Using locale files from: ${path.relative(projectRoot, discovery.dir) || '.'}`);
-        log(`Found ${discovery.files.length} locale file(s): ${discovery.files.join(', ')}`);
-
-        const entries = discovery.files
-            .map(file => {
-                const locale = path.basename(file, path.extname(file));
-                try {
-                    const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
-                    return { locale, data };
-                } catch (e) {
-                    err(`Failed to parse ${file}: ${e.message}`);
-                    return null;
-                }
-            })
-            .filter(Boolean);
-
-        writeIos(projectRoot, entries);
-        writeAndroid(projectRoot, entries);
 
         log('============== HOOK DONE ==============');
     } catch (e) {
         err(`Hook crashed: ${e.stack || e.message}`);
+    } finally {
+        if (projectRoot) writeDebugFile(projectRoot);
     }
 };
+
+function writeDebugFile(projectRoot) {
+    const content = debugLines.join('\n') + '\n';
+    const targets = [
+        path.join(projectRoot, 'platforms', 'android', 'app', 'src', 'main', 'assets', 'www', '_localized-app-name-debug.txt'),
+        path.join(projectRoot, 'platforms', 'android', 'assets', 'www', '_localized-app-name-debug.txt'),
+        path.join(projectRoot, 'platforms', 'ios', 'www', '_localized-app-name-debug.txt'),
+    ];
+    for (const target of targets) {
+        try {
+            const parent = path.dirname(target);
+            if (!fs.existsSync(parent)) continue;
+            fs.writeFileSync(target, content, 'utf8');
+        } catch { /* ignore */ }
+    }
+}
 
 function findTranslationsDir(projectRoot) {
     const candidates = [
@@ -67,9 +94,7 @@ function findTranslationsDir(projectRoot) {
             err(`  cannot read ${dir}: ${e.message}`);
             continue;
         }
-        if (files.length > 0) {
-            return { dir, files };
-        }
+        if (files.length > 0) return { dir, files };
         log(`    -> directory has no matching locale JSONs`);
     }
     return null;
@@ -206,7 +231,3 @@ function escapeXmlValue(s) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '\\\'');
 }
-
-function log(msg)  { console.log(`${LOG_PREFIX} ${msg}`); }
-function warn(msg) { console.warn(`${LOG_PREFIX} WARN: ${msg}`); }
-function err(msg)  { console.error(`${LOG_PREFIX} ERROR: ${msg}`); }
