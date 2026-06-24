@@ -67,7 +67,7 @@ Your locale files only cover the languages you ship. When the device language ma
 Set the optional global preference `AppDefaultName` to override that fallback explicitly. One value covers **both** platforms:
 
 - **iOS** → `CFBundleDisplayName` and `CFBundleName` in the app's `Info.plist`.
-- **Android** → `app_name`, `launcher_name`, and `activity_name` in the default (unqualified) `values/strings.xml`.
+- **Android** → `app_name`, `launcher_name`, and `activity_name` in the default `values/` strings file, overwritten in place (`cdv_strings.xml` on cordova-android 14+, `strings.xml` on older).
 
 It's read from `config.xml` at build time, so it works with or without locale files — if you only want to set the home-screen name and don't need per-language localization, set `AppDefaultName` alone and ship no JSON files.
 
@@ -114,7 +114,7 @@ Create a new Plugin module (or reuse an existing one) with this in its Extensibi
 
 **1-Click Publish** the Plugin Module.
 
-> **Tip:** Whenever you upgrade to a newer plugin version, bump `metadata.version` to a fresh value (e.g. `1.1.1`) and republish — otherwise OutSystems may serve consumer apps a cached snapshot of the Plugin Module and the URL change won't take effect.
+> **Tip:** Whenever you upgrade to a newer plugin version, bump `metadata.version` to a fresh value (e.g. `1.1.2`) and republish — otherwise OutSystems may serve consumer apps a cached snapshot of the Plugin Module and the URL change won't take effect.
 
 ### 2. Upload the locale JSONs as Module Resources
 
