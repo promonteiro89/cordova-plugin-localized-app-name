@@ -353,13 +353,17 @@ function writeAndroid(projectRoot, entries, appDefaultName) {
     }
     log(`Android: wrote ${wrote} locale file(s).`);
 
-    // Unqualified values/ is the default-locale fallback.
+    // The default (unqualified) name must overwrite app_name where Cordova already
+    // defines it — values/cdv_strings.xml on cordova-android 14+, values/strings.xml
+    // on older. We rewrite that file in place; writing our own values/strings.xml
+    // would define the same names twice in one folder, which fails Gradle's
+    // mergeResources with "Duplicate resources".
     if (appDefaultName) {
-        writeAndroidStrings(path.join(resDir, 'values'), appDefaultName);
-        log(`Android -> values/strings.xml (default) = "${appDefaultName}"`);
+        applyAndroidDefaultName(resDir, appDefaultName);
     }
 }
 
+// Locale folders (values-<locale>/) start empty, so we create the file and add keys.
 function writeAndroidStrings(valuesDir, appName) {
     fs.mkdirSync(valuesDir, { recursive: true });
 
@@ -373,6 +377,41 @@ function writeAndroidStrings(valuesDir, appName) {
     }
 
     fs.writeFileSync(stringsPath, xml, 'utf8');
+}
+
+function applyAndroidDefaultName(resDir, appName) {
+    const valuesDir = path.join(resDir, 'values');
+    const target = findAndroidStringsFile(valuesDir, 'app_name');
+    if (!target) {
+        warn('Android: no values/*.xml defines app_name; cannot set default name.');
+        return;
+    }
+
+    let xml = fs.readFileSync(target, 'utf8');
+    for (const key of ANDROID_STRING_KEYS) {
+        xml = replaceAndroidString(xml, key, appName);
+    }
+    fs.writeFileSync(target, xml, 'utf8');
+    log(`Android -> ${path.relative(resDir, target)} (default) = "${appName}"`);
+}
+
+// Locate the values/*.xml that already declares the given string, so we overwrite
+// it in place instead of introducing a duplicate definition.
+function findAndroidStringsFile(valuesDir, key) {
+    let files;
+    try {
+        files = fs.readdirSync(valuesDir).filter(f => f.endsWith('.xml'));
+    } catch {
+        return null;
+    }
+    const pattern = new RegExp(`<string\\b[^>]*\\bname="${key}"`);
+    for (const f of files) {
+        const p = path.join(valuesDir, f);
+        try {
+            if (pattern.test(fs.readFileSync(p, 'utf8'))) return p;
+        } catch { /* skip unreadable */ }
+    }
+    return null;
 }
 
 function resolveAndroidResDir(projectRoot) {
@@ -393,6 +432,15 @@ function upsertAndroidString(xml, key, value) {
         return xml.replace(keyPattern, `<string name="${key}">${escaped}</string>`);
     }
     return xml.replace(/<\/resources>/, `    <string name="${key}">${escaped}</string>\n</resources>`);
+}
+
+// Replace an existing <string name="key">…</string> value in place, keeping the
+// opening tag's attributes. Unlike upsertAndroidString it never appends: adding a
+// key that's missing here could duplicate one defined in another values/ file.
+function replaceAndroidString(xml, key, value) {
+    const escaped = escapeXmlValue(value);
+    const pattern = new RegExp(`(<string\\b[^>]*\\bname="${key}"[^>]*>)[\\s\\S]*?(</string>)`);
+    return pattern.test(xml) ? xml.replace(pattern, `$1${escaped}$2`) : xml;
 }
 
 function findIosAppFolder(iosDir) {
