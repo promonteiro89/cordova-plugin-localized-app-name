@@ -8,6 +8,9 @@ const LOG_PREFIX = '[localized-app-name]';
 const ANDROID_STRING_KEYS = ['app_name', 'launcher_name', 'activity_name'];
 const LOCALE_FILENAME_PATTERN = /^[a-zA-Z]{2,3}([-_][a-zA-Z0-9]+)*\.json$/;
 
+// Global config.xml preference for the fallback name (see README).
+const DEFAULT_NAME_PREFERENCE = 'AppDefaultName';
+
 function log(msg)  { console.log(`${LOG_PREFIX} ${msg}`); }
 function warn(msg) { console.warn(`${LOG_PREFIX} WARN: ${msg}`); }
 function err(msg)  { console.error(`${LOG_PREFIX} ERROR: ${msg}`); }
@@ -15,29 +18,38 @@ function err(msg)  { console.error(`${LOG_PREFIX} ERROR: ${msg}`); }
 module.exports = function (context) {
     try {
         const projectRoot = context.opts.projectRoot;
+
+        const appDefaultName = readGlobalPreference(projectRoot, DEFAULT_NAME_PREFERENCE);
         const discovery = findTranslationsDir(projectRoot);
-        if (!discovery) {
-            log('No locale JSON files found in any known location, skipping.');
+
+        if (!discovery && !appDefaultName) {
+            log(`No locale JSON files found and no ${DEFAULT_NAME_PREFERENCE} preference set, skipping.`);
             return;
         }
 
-        log(`Reading locale files from ${path.relative(projectRoot, discovery.dir) || '.'} (${discovery.files.length} file(s): ${discovery.files.join(', ')})`);
+        let entries = [];
+        if (discovery) {
+            log(`Reading locale files from ${path.relative(projectRoot, discovery.dir) || '.'} (${discovery.files.length} file(s): ${discovery.files.join(', ')})`);
+            entries = discovery.files
+                .map(file => {
+                    const locale = path.basename(file, path.extname(file));
+                    try {
+                        const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
+                        return { locale, data };
+                    } catch (e) {
+                        err(`Failed to parse ${file}: ${e.message}`);
+                        return null;
+                    }
+                })
+                .filter(Boolean);
+        }
 
-        const entries = discovery.files
-            .map(file => {
-                const locale = path.basename(file, path.extname(file));
-                try {
-                    const data = JSON.parse(fs.readFileSync(path.join(discovery.dir, file), 'utf8'));
-                    return { locale, data };
-                } catch (e) {
-                    err(`Failed to parse ${file}: ${e.message}`);
-                    return null;
-                }
-            })
-            .filter(Boolean);
+        if (appDefaultName) {
+            log(`Default app name (${DEFAULT_NAME_PREFERENCE}) = "${appDefaultName}".`);
+        }
 
-        writeIos(projectRoot, entries);
-        writeAndroid(projectRoot, entries);
+        writeIos(projectRoot, entries, appDefaultName);
+        writeAndroid(projectRoot, entries, appDefaultName);
     } catch (e) {
         err(`Hook crashed: ${e.stack || e.message}`);
     }
@@ -75,7 +87,56 @@ function isLocaleFile(dir, filename) {
     }
 }
 
-function writeIos(projectRoot, entries) {
+// <platform> blocks are stripped first so a per-platform preference of the same
+// name can't match — the value applies to both platforms. Regex rather than an
+// XML parser to keep the hook dependency-free.
+function readGlobalPreference(projectRoot, prefName) {
+    const configPath = path.join(projectRoot, 'config.xml');
+    if (!fs.existsSync(configPath)) return null;
+
+    let xml;
+    try {
+        xml = fs.readFileSync(configPath, 'utf8');
+    } catch (e) {
+        warn(`could not read config.xml: ${e.message}`);
+        return null;
+    }
+
+    const globalXml = xml.replace(/<platform\b[\s\S]*?<\/platform>/gi, '');
+    const tagPattern = /<preference\b([^>]*)>/gi;
+    let match;
+    while ((match = tagPattern.exec(globalXml)) !== null) {
+        const attrs = match[1].replace(/\/\s*$/, '');
+        const name = readAttr(attrs, 'name');
+        if (name && name.toLowerCase() === prefName.toLowerCase()) {
+            const value = readAttr(attrs, 'value');
+            return value && value.trim() ? value.trim() : null;
+        }
+    }
+    return null;
+}
+
+function readAttr(attrs, key) {
+    const m = new RegExp(`\\b${key}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i').exec(attrs);
+    if (!m) return null;
+    return decodeXmlEntities(m[2] !== undefined ? m[2] : m[3]);
+}
+
+// config.xml values are XML-encoded; decode before use so re-escaping when we
+// write the plist / strings.xml doesn't double-encode (&amp; -> &amp;amp;).
+// &amp; is decoded last so "&amp;lt;" stays "&lt;".
+function decodeXmlEntities(s) {
+    return String(s)
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&');
+}
+
+function writeIos(projectRoot, entries, appDefaultName) {
     const iosDir = path.join(projectRoot, 'platforms', 'ios');
     if (!fs.existsSync(iosDir)) {
         log('iOS: platforms/ios not present, skipping.');
@@ -119,6 +180,59 @@ function writeIos(projectRoot, entries) {
     if (writtenLocaleResources.length > 0) {
         registerIosLocalizations(projectRoot, iosDir, writtenLocaleResources);
     }
+
+    if (appDefaultName) {
+        applyIosDefaultName(appFolder, appDefaultName);
+    }
+}
+
+// iOS's fallback display name (when no *.lproj matches) is CFBundleDisplayName /
+// CFBundleName in the main Info.plist. Written in after_prepare, after
+// cordova-ios generates the plist, so our value wins. No cache purge needed: the
+// plist isn't cached the way the pbxproj is.
+function applyIosDefaultName(appFolder, appDefaultName) {
+    const plistPath = findIosInfoPlist(appFolder);
+    if (!plistPath) {
+        warn('iOS: no *-Info.plist found, cannot set default app name.');
+        return;
+    }
+
+    try {
+        let xml = fs.readFileSync(plistPath, 'utf8');
+        xml = upsertPlistString(xml, 'CFBundleDisplayName', appDefaultName);
+        xml = upsertPlistString(xml, 'CFBundleName', appDefaultName);
+        fs.writeFileSync(plistPath, xml, 'utf8');
+        log(`iOS: set default CFBundleDisplayName/CFBundleName = "${appDefaultName}" in ${path.basename(plistPath)}.`);
+    } catch (e) {
+        warn(`iOS: could not set default app name in Info.plist: ${e.message}`);
+    }
+}
+
+function findIosInfoPlist(appFolder) {
+    try {
+        const file = fs.readdirSync(appFolder).find(f => f.endsWith('-Info.plist'));
+        return file ? path.join(appFolder, file) : null;
+    } catch {
+        return null;
+    }
+}
+
+// Replaces the key's value if present, else inserts the pair before the root
+// dict's close (the last </dict> in the file).
+function upsertPlistString(xml, key, value) {
+    const escapedValue = escapePlistValue(value);
+    const keyPattern = new RegExp(`(<key>${escapeRegExp(key)}</key>\\s*<string>)[\\s\\S]*?(</string>)`);
+    if (keyPattern.test(xml)) {
+        return xml.replace(keyPattern, `$1${escapedValue}$2`);
+    }
+
+    const lastDictClose = xml.lastIndexOf('</dict>');
+    if (lastDictClose === -1) {
+        warn(`iOS: Info.plist has no </dict>; left "${key}" unset.`);
+        return xml;
+    }
+    const insertion = `\t<key>${key}</key>\n\t<string>${escapedValue}</string>\n`;
+    return xml.slice(0, lastDictClose) + insertion + xml.slice(lastDictClose);
 }
 
 // Register the per-locale InfoPlist.strings files in the Xcode project so
@@ -220,7 +334,7 @@ function findPbxproj(iosDir) {
     return null;
 }
 
-function writeAndroid(projectRoot, entries) {
+function writeAndroid(projectRoot, entries, appDefaultName) {
     const resDir = resolveAndroidResDir(projectRoot);
     if (!resDir) {
         log('Android: no platforms/android res directory found, skipping.');
@@ -233,23 +347,32 @@ function writeAndroid(projectRoot, entries) {
         if (!appName) continue;
 
         const androidLocale = toAndroidLocale(locale);
-        const valuesDir = path.join(resDir, `values-${androidLocale}`);
-        fs.mkdirSync(valuesDir, { recursive: true });
-
-        const stringsPath = path.join(valuesDir, 'strings.xml');
-        let xml = fs.existsSync(stringsPath)
-            ? fs.readFileSync(stringsPath, 'utf8')
-            : `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n`;
-
-        for (const key of ANDROID_STRING_KEYS) {
-            xml = upsertAndroidString(xml, key, appName);
-        }
-
-        fs.writeFileSync(stringsPath, xml, 'utf8');
+        writeAndroidStrings(path.join(resDir, `values-${androidLocale}`), appName);
         log(`Android -> values-${androidLocale}/strings.xml = "${appName}"`);
         wrote++;
     }
     log(`Android: wrote ${wrote} locale file(s).`);
+
+    // Unqualified values/ is the default-locale fallback.
+    if (appDefaultName) {
+        writeAndroidStrings(path.join(resDir, 'values'), appDefaultName);
+        log(`Android -> values/strings.xml (default) = "${appDefaultName}"`);
+    }
+}
+
+function writeAndroidStrings(valuesDir, appName) {
+    fs.mkdirSync(valuesDir, { recursive: true });
+
+    const stringsPath = path.join(valuesDir, 'strings.xml');
+    let xml = fs.existsSync(stringsPath)
+        ? fs.readFileSync(stringsPath, 'utf8')
+        : `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n`;
+
+    for (const key of ANDROID_STRING_KEYS) {
+        xml = upsertAndroidString(xml, key, appName);
+    }
+
+    fs.writeFileSync(stringsPath, xml, 'utf8');
 }
 
 function resolveAndroidResDir(projectRoot) {
@@ -305,4 +428,17 @@ function escapeXmlValue(s) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '\\\'');
+}
+
+// Plist <string> text needs only markup escaping — and must NOT backslash-escape
+// apostrophes the way escapeXmlValue does (that's an Android-only rule).
+function escapePlistValue(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -24,7 +24,7 @@ At build time, the plugin reads one small JSON file per language and generates t
 - **iOS** → `<locale>.lproj/InfoPlist.strings` with `CFBundleDisplayName` and `CFBundleName`, registered in `App.xcodeproj/project.pbxproj` (with cordova-ios's pbxproj cache purged so the registration survives signing setup).
 - **Android** → `values-<locale>/strings.xml` with `app_name`, `launcher_name`, and `activity_name` (writes all three so the localized label applies regardless of which key Cordova's manifest references).
 
-The OS picks the right one based on the device language. Locales you don't define fall back to your default app name automatically — you only ship the languages you actually want to support.
+The OS picks the right one based on the device language. Locales you don't define fall back to your default app name automatically — your project's configured app name, or an explicit [`AppDefaultName`](#default-app-name-appdefaultname) if you set one. You only ship the languages you actually want to support.
 
 ### Where the plugin looks for JSON files
 
@@ -60,6 +60,37 @@ Sample files are in [`examples/translations/app/`](examples/translations/app).
 
 Use simple two-letter codes (`en`, `pt`, `es`) unless you specifically need regional variants.
 
+## Default app name (`AppDefaultName`)
+
+Your locale files only cover the languages you ship. When the device language matches none of them, the OS uses the app's **default** name — normally your project's app name (`<name>` in `config.xml`, or the OutSystems app/module name).
+
+Set the optional global preference `AppDefaultName` to override that fallback explicitly. One value covers **both** platforms:
+
+- **iOS** → `CFBundleDisplayName` and `CFBundleName` in the app's `Info.plist`.
+- **Android** → `app_name`, `launcher_name`, and `activity_name` in the default (unqualified) `values/strings.xml`.
+
+It's read from `config.xml` at build time, so it works with or without locale files — if you only want to set the home-screen name and don't need per-language localization, set `AppDefaultName` alone and ship no JSON files.
+
+**OutSystems 11** — add it to the **global** preferences in your mobile app's Extensibility Configurations:
+
+```json
+{
+  "preferences": {
+    "global": [
+      { "name": "AppDefaultName", "value": "Weather" }
+    ]
+  }
+}
+```
+
+**Standard Cordova** — add a global `<preference>` to `config.xml`:
+
+```xml
+<preference name="AppDefaultName" value="Weather" />
+```
+
+> It must be a **global** preference — a `<preference>` placed inside a `<platform>` block is ignored on purpose, since the one value is meant to apply to both platforms.
+
 ## Install — OutSystems 11
 
 OutSystems 11 uses a two-module pattern: a thin **Plugin Module** that points at this repo, and your **Mobile App** that depends on that Plugin Module.
@@ -71,19 +102,19 @@ Create a new Plugin module (or reuse an existing one) with this in its Extensibi
 ```json
 {
     "plugin": {
-        "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name.git#1.0.5"
+        "url": "https://github.com/promonteiro89/cordova-plugin-localized-app-name.git#1.1.0"
     },
     "metadata": {
         "mabs-min": "10.0.0",
         "name": "Localized App Name Plugin",
-        "version": "1.0.5"
+        "version": "1.1.0"
     }
 }
 ```
 
 **1-Click Publish** the Plugin Module.
 
-> **Tip:** Whenever you upgrade to a newer plugin version, bump `metadata.version` to a fresh value (e.g. `1.0.6`) and republish — otherwise OutSystems may serve consumer apps a cached snapshot of the Plugin Module and the URL change won't take effect.
+> **Tip:** Whenever you upgrade to a newer plugin version, bump `metadata.version` to a fresh value (e.g. `1.1.1`) and republish — otherwise OutSystems may serve consumer apps a cached snapshot of the Plugin Module and the URL change won't take effect.
 
 ### 2. Upload the locale JSONs as Module Resources
 
@@ -112,6 +143,8 @@ In your mobile app's Extensibility Configurations, set the required iOS preferen
 
 `CFBundleAllowMixedLocalizations` is **required** on iOS — without it, iOS silently ignores the localized display name.
 
+Optionally, set a fallback name for unsupported languages by adding `AppDefaultName` to `preferences.global` — see [Default app name](#default-app-name-appdefaultname).
+
 Then in **Manage Dependencies**, add the Plugin Module from step 1 and tick its entry points.
 
 ### 4. Build
@@ -121,7 +154,7 @@ Then in **Manage Dependencies**, add the Plugin Module from step 1 and tick its 
 ## Install — Standard Cordova
 
 ```bash
-cordova plugin add https://github.com/promonteiro89/cordova-plugin-localized-app-name.git#1.0.5
+cordova plugin add https://github.com/promonteiro89/cordova-plugin-localized-app-name.git#1.1.0
 ```
 
 Put your JSON files at `translations/app/<locale>.json` in the project root.
@@ -135,6 +168,8 @@ For iOS, ensure `CFBundleAllowMixedLocalizations` is set to `true` in your `Info
     </config-file>
 </platform>
 ```
+
+Optionally, set a fallback name for unsupported languages with a global `<preference name="AppDefaultName" value="..." />` — see [Default app name](#default-app-name-appdefaultname).
 
 ## Testing
 
